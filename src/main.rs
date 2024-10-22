@@ -1,22 +1,22 @@
+use anyhow::{Error, Result};
 use serde_json;
 use std::env;
 
 // Available if you need it!
 // use serde_bencode
 
+fn decode_string(encoded_value: &str) -> Result<serde_json::Value> {
+    if let Some((len, str)) = encoded_value.split_once(":") {
+        let length = len.parse::<usize>().unwrap();
+        let (parsed, _rest) = str.split_at(length);
+        return Ok(serde_json::Value::String(parsed.to_string()));
+    }
+    Err(Error::msg("Failed decoding string"))
+}
+
 #[allow(dead_code)]
 fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
-    // If encoded_value starts with a digit, it's a number
-    if encoded_value.chars().next().unwrap().is_digit(10) {
-        // Example: "5:hello" -> "hello"
-        let colon_index = encoded_value.find(':').unwrap();
-        let number_string = &encoded_value[..colon_index];
-        let number = number_string.parse::<i64>().unwrap();
-        let string = &encoded_value[colon_index + 1..colon_index + 1 + number as usize];
-        return serde_json::Value::String(string.to_string());
-    } else {
-        panic!("Unhandled encoded value: {}", encoded_value)
-    }
+    decode_string(encoded_value).unwrap()
 }
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
