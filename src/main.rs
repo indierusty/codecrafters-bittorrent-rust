@@ -1,5 +1,6 @@
 use anyhow::{Error, Result};
-use serde_json;
+use core::panic;
+use serde_json::{self, json};
 use std::env;
 
 // Available if you need it!
@@ -14,9 +15,28 @@ fn decode_string(encoded_value: &str) -> Result<serde_json::Value> {
     Err(Error::msg("Failed decoding string"))
 }
 
+fn decode_integer(encoded_value: &str) -> Result<serde_json::Value> {
+    if encoded_value.starts_with("i") {
+        let encoded_integer = encoded_value[1..]
+            .chars()
+            .take_while(|c| *c != 'e')
+            .collect::<String>()
+            .parse::<isize>()
+            .unwrap();
+
+        return Ok(json!(encoded_integer));
+    }
+
+    Err(Error::msg("Failed decoding Integer"))
+}
+
 #[allow(dead_code)]
 fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
-    decode_string(encoded_value).unwrap()
+    match &encoded_value[..1] {
+        "i" => decode_integer(encoded_value).unwrap(),
+        n if n.parse::<usize>().is_ok() => decode_string(encoded_value).unwrap(),
+        _ => panic!(),
+    }
 }
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
