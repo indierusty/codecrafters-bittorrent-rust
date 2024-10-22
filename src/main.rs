@@ -37,7 +37,6 @@ fn decode_list(encoded_value: &str) -> Result<(Option<serde_json::Value>, &str)>
         let mut values = vec![];
         let mut rest = &encoded_value[1..];
         loop {
-            dbg!(rest);
             let (value, rest_inner) = decode_bencoded_value(rest);
             if let Some(v) = value {
                 values.push(v);
@@ -53,11 +52,36 @@ fn decode_list(encoded_value: &str) -> Result<(Option<serde_json::Value>, &str)>
     Err(Error::msg("Failed decoding List"))
 }
 
+fn decode_dict(encoded_value: &str) -> Result<(Option<serde_json::Value>, &str)> {
+    if encoded_value.starts_with("d") {
+        let mut values = serde_json::Map::new();
+        let mut rest = &encoded_value[1..];
+        loop {
+            let (key, rest_inner) = decode_bencoded_value(rest);
+            let (value, rest_inner) = decode_bencoded_value(rest_inner);
+            if let (Some(k), Some(v)) = (key, value) {
+                // NOTE: key must be string in bencoded value
+                if let serde_json::Value::String(s) = k {
+                    values.insert(s, v);
+                }
+            }
+            rest = rest_inner;
+            if rest.starts_with('e') {
+                break;
+            }
+        }
+
+        return Ok((Some(json!(values)), &rest[1..]));
+    }
+    Err(Error::msg("Failed decoding Dict"))
+}
+
 #[allow(dead_code)]
 fn decode_bencoded_value(encoded_value: &str) -> (Option<serde_json::Value>, &str) {
     match &encoded_value[..1] {
         "i" => decode_integer(encoded_value).unwrap(),
         "l" => decode_list(encoded_value).unwrap(),
+        "d" => decode_dict(encoded_value).unwrap(),
         n if n.parse::<usize>().is_ok() => decode_string(encoded_value).unwrap(),
         _ => (None, encoded_value),
     }
