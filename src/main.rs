@@ -306,17 +306,13 @@ fn main() -> anyhow::Result<()> {
                 let mut info_hash = Sha1::new();
                 let info = &meta_info[&b"info"[..]];
                 let info = encode_value(info);
-                // dbg!(&info.iter().map(|c| *c as char).collect::<String>());
-                println!();
-                for c in &info {
-                    print!("{}", *c as char);
-                }
-                println!();
                 info_hash.update(&info);
                 info_hash.finalize()
             } else {
                 return Err(Error::msg("Cannot hash info"));
             };
+
+            let piece_hashes = meta_info.info.pieces.chunks(20).collect::<Vec<&[u8]>>();
 
             println!(
                 "Tracker URL: {}",
@@ -328,6 +324,14 @@ fn main() -> anyhow::Result<()> {
             );
             println!("Length: {}", meta_info.info.length);
             println!("Info Hash: {:x}", info_hash);
+            println!("Piece Length: {}", meta_info.info.piece_length);
+            println!("Piece Hashes:");
+            for hash in &piece_hashes {
+                for p in *hash {
+                    print!("{:02x}", p);
+                }
+                println!();
+            }
         }
         _ => {}
     }
