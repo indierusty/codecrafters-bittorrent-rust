@@ -119,8 +119,8 @@ pub struct TrackerResponse {
 impl TrackerResponse {
     fn from_value(value: Value) -> anyhow::Result<Self> {
         if let Value::Dict(res) = value {
-            let interval = if let Some(Value::Integer(i)) = res.get(&b"interval"[..]) {
-                *i as usize
+            let interval = if let Some(Value::Integer(v)) = res.get(&b"interval"[..]) {
+                *v as usize
             } else {
                 return Err(anyhow::Error::msg("no interval in tracker response"));
             };
@@ -136,7 +136,7 @@ impl TrackerResponse {
         }
 
         Err(anyhow::Error::msg(
-            "failed parse tracker response from value",
+            "failed to parse tracker response from value",
         ))
     }
 }
