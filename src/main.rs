@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
-use sha1::{Digest, Sha1};
 use std::env;
 use std::fs;
 
@@ -18,24 +17,14 @@ fn main() -> anyhow::Result<()> {
         "decode" => {
             let encoded_value = args.next().expect("encoded value");
             let decoded_value = Value::decode(&encoded_value.as_bytes())?;
-            // let decoded_value = decode_bencoded_value(&encoded_value.as_bytes())?;
-            // if let Some(value) = decoded_value {
-            // println!("{}", value.to_json());
-            // }
             println!("{}", decoded_value.to_json());
         }
         "info" => {
             let file_path = args.next().expect("path to torrent file");
             let file = fs::read(file_path).expect("read file");
-
             let decoded_value = Value::decode(&file).expect("decode bencode value");
             let torrent = Torrent::from_value(&decoded_value).expect("parse MetaInfo from value");
-
-            let mut hasher = Sha1::new();
-            let encoded_info = torrent.info.to_value().encode();
-            hasher.update(&encoded_info);
-            let info_hash = hasher.finalize();
-
+            let info_hash = torrent.info.hash();
             let piece_hashes = torrent.piece_hashes();
 
             println!(
@@ -47,7 +36,13 @@ fn main() -> anyhow::Result<()> {
                     .collect::<String>()
             );
             println!("Length: {}", torrent.info.length);
-            println!("Info Hash: {:x}", info_hash);
+            println!(
+                "Info Hash: {}",
+                info_hash.iter().fold(String::new(), |mut acc, c| {
+                    acc.push_str(&format!("{:02x}", *c));
+                    acc
+                })
+            );
             println!("Piece Length: {}", torrent.info.piece_length);
             println!("Piece Hashes:");
             for hash in &piece_hashes {
