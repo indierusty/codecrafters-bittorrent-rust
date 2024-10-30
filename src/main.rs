@@ -5,11 +5,15 @@ use std::fs;
 use std::net::Ipv4Addr;
 use std::net::SocketAddrV4;
 
+mod peer;
 mod torrent;
+mod tracker;
 mod value;
 
 use anyhow::Context;
+use peer::*;
 use torrent::*;
+use tracker::*;
 use value::*;
 
 #[tokio::main]
@@ -24,9 +28,7 @@ async fn main() -> anyhow::Result<()> {
         }
         "info" => {
             let file_path = args.next().expect("path to torrent file");
-            let file = fs::read(file_path).expect("read file");
-            let decoded_value = Value::decode(&file).expect("decode bencode value");
-            let torrent = Torrent::from_value(&decoded_value).expect("parse MetaInfo from value");
+            let torrent = parse_torrent_file(&file_path)?;
             let info_hash = torrent.info.hash();
             let piece_hashes = torrent.piece_hashes();
 
@@ -57,9 +59,7 @@ async fn main() -> anyhow::Result<()> {
         }
         "peers" => {
             let file_path = args.next().expect("path to torrent file");
-            let file = fs::read(file_path).expect("read file");
-            let decoded_value = Value::decode(&file).expect("decode bencode value");
-            let torrent = Torrent::from_value(&decoded_value).expect("parse MetaInfo from value");
+            let torrent = parse_torrent_file(&file_path)?;
 
             let tracker = TrackerRequest {
                 info_hash: torrent.info.hash(),
@@ -102,60 +102,42 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}:{}", peer.ip(), peer.port());
             }
         }
+        "handshake" => {
+            use tokio::io::AsyncReadExt;
+            use tokio::io::AsyncWriteExt;
+
+            let file_path = args.next().expect("path to torrent file");
+            let peer_add = args.next().expect("peer address");
+            let torrent = parse_torrent_file(&file_path)?;
+
+            let info_hash = torrent.info.hash();
+            let peer = peer_add.parse::<SocketAddrV4>().unwrap();
+            let mut handshake = Handshake::new(info_hash, *b"asdf5asdf5asdf5asdf5");
+
+            let mut peer = tokio::net::TcpStream::connect(peer).await.unwrap();
+
+            let handshake_bytes =
+                &mut handshake as *mut Handshake as *mut [u8; std::mem::size_of::<Handshake>()];
+            // Safety: Handshake is a POD(Plain Old Data) with repr(c)
+            let handshake_bytes: &mut [u8; std::mem::size_of::<Handshake>()] =
+                unsafe { &mut *handshake_bytes };
+            peer.write_all(handshake_bytes)
+                .await
+                .context("write handshake")?;
+            peer.read_exact(handshake_bytes)
+                .await
+                .context("read handshake")?;
+
+            println!("Peer ID: {}", hex::encode(&handshake.peer_id));
+        }
         _ => {}
     }
     Ok(())
 }
 
-pub struct TrackerResponse {
-    // An integer, indicating how often your client should make a request to the tracker.
-    // You can ignore this value for the purposes of this challenge.
-    interval: usize,
-    // A string, contains list of peers that your client can connect to.
-    // Each peer is represented using 6 bytes. The first 4 bytes are the peer's IP address and the last 2 bytes are the peer's port number
-    peers: Vec<u8>,
-}
-
-impl TrackerResponse {
-    fn from_value(value: Value) -> anyhow::Result<Self> {
-        if let Value::Dict(res) = value {
-            let interval = if let Some(Value::Integer(v)) = res.get(&b"interval"[..]) {
-                *v as usize
-            } else {
-                return Err(anyhow::Error::msg("no interval in tracker response"));
-            };
-            let peers = if let Some(Value::String(v)) = res.get(&b"peers"[..]) {
-                v
-            } else {
-                return Err(anyhow::Error::msg("no peers in tracker response"));
-            };
-            return Ok(Self {
-                interval,
-                peers: peers.clone(),
-            });
-        }
-
-        Err(anyhow::Error::msg(
-            "failed to parse tracker response from value",
-        ))
-    }
-}
-
-/// Query Params for making Get requet to Tracker
-pub struct TrackerRequest {
-    /// 20 bytes long info hash of the torrent need to be URL encoded
-    info_hash: [u8; 20],
-    /// port your client is listening on set 6881 for this challenge
-    port: usize,
-    /// a unique identifier for your client of length 20 that you get to pick.
-    peer_id: String,
-    /// the total amount uploaded so far, 0 as default
-    uploaded: usize,
-    /// the total amount downloaded so far, 0 as default
-    downloaded: usize,
-    /// number of bytes left to download, total length of file as default
-    left: usize,
-    // whether the peer list should use the compact representation
-    // set true as default. used mostly for backward compatibily
-    compact: usize,
+fn parse_torrent_file(file_path: &str) -> anyhow::Result<Torrent> {
+    let file = fs::read(file_path).context("read torrent file")?;
+    let decoded_value = Value::decode(&file).context("decode bencode value")?;
+    let torrent = Torrent::from_value(&decoded_value).context("parse MetaInfo from value")?;
+    Ok(torrent)
 }
