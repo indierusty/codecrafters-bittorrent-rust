@@ -2,7 +2,6 @@
 #![allow(unused_variables)]
 use std::env;
 use std::fs;
-use std::net::Ipv4Addr;
 use std::net::SocketAddrV4;
 
 mod peer;
@@ -60,75 +59,23 @@ async fn main() -> anyhow::Result<()> {
         "peers" => {
             let file_path = args.next().expect("path to torrent file");
             let torrent = parse_torrent_file(&file_path)?;
-
-            let tracker = TrackerRequest {
-                info_hash: torrent.info.hash(),
-                port: 6881,
-                peer_id: "code5craf5ters5code5".to_string(),
-                uploaded: 0,
-                downloaded: 0,
-                left: torrent.info.length,
-                compact: 1,
-            };
-
-            let info_hash_url = tracker.info_hash.iter().fold(String::new(), |mut acc, c| {
-                acc.push('%');
-                acc.push_str(&format!("{:02x}", c));
-                acc
-            });
-
-            let request_url = format!(
-                "{}?port={}&peer_id={}&uploaded={}&downloaded={}&left={}&compact={}&info_hash={}",
-                String::from_utf8(torrent.announce)?,
-                tracker.port,
-                tracker.peer_id,
-                tracker.uploaded,
-                tracker.downloaded,
-                tracker.left,
-                tracker.compact,
-                info_hash_url
-            );
-
-            let response = reqwest::get(&request_url).await.context("query tracker")?;
-
-            let value = Value::decode(&response.bytes().await?)?;
-            let tracker_res = TrackerResponse::from_value(value)?;
-
-            for peer in tracker_res.peers.chunks(6) {
-                let peer = SocketAddrV4::new(
-                    Ipv4Addr::new(peer[0], peer[1], peer[2], peer[3]),
-                    u16::from_be_bytes([peer[4], peer[5]]),
-                );
+            let peers = get_peers(&torrent).await?;
+            for peer in peers {
                 println!("{}:{}", peer.ip(), peer.port());
             }
         }
         "handshake" => {
-            use tokio::io::AsyncReadExt;
-            use tokio::io::AsyncWriteExt;
-
             let file_path = args.next().expect("path to torrent file");
             let peer_add = args.next().expect("peer address");
             let torrent = parse_torrent_file(&file_path)?;
 
             let info_hash = torrent.info.hash();
-            let peer = peer_add.parse::<SocketAddrV4>().unwrap();
-            let mut handshake = Handshake::new(info_hash, *b"asdf5asdf5asdf5asdf5");
+            let peer_address = peer_add.parse::<SocketAddrV4>().unwrap();
 
-            let mut peer = tokio::net::TcpStream::connect(peer).await.unwrap();
+            let (handshake_msg, _peer_stream) =
+                handsake_peer(peer_address, info_hash, *b"asdf5asdf5asdf5asdf5").await?;
 
-            let handshake_bytes =
-                &mut handshake as *mut Handshake as *mut [u8; std::mem::size_of::<Handshake>()];
-            // Safety: Handshake is a POD(Plain Old Data) with repr(c)
-            let handshake_bytes: &mut [u8; std::mem::size_of::<Handshake>()] =
-                unsafe { &mut *handshake_bytes };
-            peer.write_all(handshake_bytes)
-                .await
-                .context("write handshake")?;
-            peer.read_exact(handshake_bytes)
-                .await
-                .context("read handshake")?;
-
-            println!("Peer ID: {}", hex::encode(&handshake.peer_id));
+            println!("Peer ID: {}", hex::encode(&handshake_msg.peer_id));
         }
         _ => {}
     }

@@ -1,4 +1,8 @@
-use crate::value::Value;
+use anyhow::Context;
+use std::net::Ipv4Addr;
+use std::net::SocketAddrV4;
+
+use crate::{value::Value, Torrent};
 
 pub struct TrackerResponse {
     // An integer, indicating how often your client should make a request to the tracker.
@@ -51,4 +55,51 @@ pub struct TrackerRequest {
     // whether the peer list should use the compact representation
     // set true as default. used mostly for backward compatibily
     pub compact: usize,
+}
+
+pub async fn get_peers(torrent: &Torrent) -> anyhow::Result<Vec<SocketAddrV4>> {
+    let tracker = TrackerRequest {
+        info_hash: torrent.info.hash(),
+        port: 6881,
+        peer_id: "code5craf5ters5code5".to_string(),
+        uploaded: 0,
+        downloaded: 0,
+        left: torrent.info.length,
+        compact: 1,
+    };
+
+    let info_hash_url = tracker.info_hash.iter().fold(String::new(), |mut acc, c| {
+        acc.push('%');
+        acc.push_str(&format!("{:02x}", c));
+        acc
+    });
+
+    let request_url = format!(
+        "{}?port={}&peer_id={}&uploaded={}&downloaded={}&left={}&compact={}&info_hash={}",
+        String::from_utf8(torrent.announce.clone())?,
+        tracker.port,
+        tracker.peer_id,
+        tracker.uploaded,
+        tracker.downloaded,
+        tracker.left,
+        tracker.compact,
+        info_hash_url
+    );
+
+    let response = reqwest::get(&request_url).await.context("query tracker")?;
+
+    let value = Value::decode(&response.bytes().await?)?;
+    let tracker_res = TrackerResponse::from_value(value)?;
+
+    let mut peers = Vec::new();
+
+    for peer in tracker_res.peers.chunks(6) {
+        let peer = SocketAddrV4::new(
+            Ipv4Addr::new(peer[0], peer[1], peer[2], peer[3]),
+            u16::from_be_bytes([peer[4], peer[5]]),
+        );
+        peers.push(peer);
+    }
+
+    Ok(peers)
 }
