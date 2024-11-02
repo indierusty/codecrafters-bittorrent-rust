@@ -119,6 +119,75 @@ async fn main() -> anyhow::Result<()> {
             let piece = download_piece(piece_index, piece_len, &mut peer_stream).await?;
             fs::write(output_path, piece).expect("write piece to file");
         }
+        "download" => {
+            let _ = args.next().context("expected -o")?;
+            let output_path = args.next().context("get output path")?;
+            let torrent_path = args.next().context("get torrent file path")?;
+
+            let torrent = parse_torrent_file(&torrent_path).context("parse torrent file")?;
+            let my_peer_id = b"randombyterandombyte";
+            let peers = get_peers(&torrent).await?;
+            let info = &torrent.info;
+
+            struct Piece {
+                index: u32,
+                length: u32,
+                data: Vec<u8>,
+            }
+
+            impl Piece {
+                fn new(index: u32, length: u32) -> Self {
+                    Self {
+                        index,
+                        length,
+                        data: Vec::new(),
+                    }
+                }
+            }
+
+            let npieces = info.pieces.len() as u32;
+            let mut pieces = Vec::new();
+            for i in 0..npieces {
+                // calculate piece length in bytes
+                let rem = info.length % info.piece_length;
+                let len = if i == npieces - 1 && rem != 0 {
+                    rem
+                } else {
+                    info.piece_length
+                };
+
+                pieces.push(Piece::new(i, len as u32));
+            }
+
+            let (_handshake_msg, mut peer_stream) =
+                handsake_peer(peers[1], info.hash(), *my_peer_id).await?;
+
+            // recieve [bitfield] message
+            let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
+            if pmf.msg_type != MsgType::Bitfield {
+                todo!()
+            }
+            // send [interested] message
+            let pmf = PeerMsgFrame::new(MsgType::Interested, Vec::new());
+            pmf.write(&mut peer_stream).await?;
+            // recieve unchoke message
+            let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
+            if pmf.msg_type != MsgType::Unchoke {
+                todo!()
+            }
+
+            for piece in &mut pieces {
+                let mut data = download_piece(piece.index, piece.length, &mut peer_stream).await?;
+                piece.data.append(&mut data);
+            }
+
+            pieces.sort_by(|a, b| a.index.cmp(&b.index));
+            let file = pieces.iter_mut().fold(Vec::new(), |mut acc, p| {
+                acc.append(&mut p.data);
+                acc
+            });
+            fs::write(output_path, file).expect("write downloaded pieces to file");
+        }
         _ => {}
     }
     Ok(())
@@ -126,25 +195,25 @@ async fn main() -> anyhow::Result<()> {
 
 async fn download_piece(
     piece_index: u32,
-    piece_len: usize,
+    piece_len: u32,
     peer_stream: &mut TcpStream,
 ) -> anyhow::Result<Vec<u8>> {
-    const SIXTEEN_KB: usize = 16 * 1024;
+    const SIXTEEN_KB: u32 = 16 * 1024;
 
     struct Block {
-        index: usize,
-        begin: usize,
-        length: usize,
+        index: u32,
+        begin: u32,
+        length: u32,
         data: Vec<u8>,
     }
 
     impl Block {
-        fn new(index: usize, begin: usize, length: usize) -> Self {
+        fn new(index: u32, begin: u32, length: u32) -> Self {
             Self {
                 index,
                 begin,
                 length,
-                data: Vec::with_capacity(length),
+                data: Vec::new(),
             }
         }
     }
@@ -202,7 +271,7 @@ async fn download_piece(
                 pmf.payload[7],
             ]);
             let data = &pmf.payload[8..];
-            assert_eq!(data.len(), block.length);
+            assert_eq!(data.len() as u32, block.length);
             block.data.put_slice(data);
         }
     }

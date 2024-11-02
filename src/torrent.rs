@@ -36,11 +36,11 @@ impl Torrent {
 #[derive(Debug, Clone)]
 pub struct Info {
     // size of the file in bytes, for single-file torrents
-    pub length: usize,
+    pub length: u32,
     // suggested name to save a file UTF-8 encoded
     pub name: String,
     // number of bytes in each piece
-    pub piece_length: usize,
+    pub piece_length: u32,
     // concatenated SHA-1 hashes of each piece
     pub pieces: Vec<[u8; 20]>,
 }
@@ -48,8 +48,8 @@ pub struct Info {
 impl Info {
     fn from_value(value: &Value) -> anyhow::Result<Self> {
         if let Value::Dict(info) = value {
-            let length: usize = if let Value::Integer(a) = info[&b"length"[..]] {
-                a as usize
+            let length = if let Value::Integer(a) = info[&b"length"[..]] {
+                a as u32
             } else {
                 return Err(Error::msg("cannot get Length from Info dict."));
             };
@@ -60,8 +60,8 @@ impl Info {
                 return Err(Error::msg("cannot parse Info Name"));
             };
 
-            let piece_length: usize = if let Value::Integer(a) = info[&b"piece length"[..]] {
-                a as usize
+            let piece_length = if let Value::Integer(a) = info[&b"piece length"[..]] {
+                a as u32
             } else {
                 return Err(Error::msg("cannot parse Info piece length"));
             };

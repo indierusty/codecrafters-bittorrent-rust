@@ -43,18 +43,18 @@ pub struct TrackerRequest {
     /// 20 bytes long info hash of the torrent need to be URL encoded
     pub info_hash: [u8; 20],
     /// port your client is listening on set 6881 for this challenge
-    pub port: usize,
+    pub port: u32,
     /// a unique identifier for your client of length 20 that you get to pick.
     pub peer_id: String,
     /// the total amount uploaded so far, 0 as default
-    pub uploaded: usize,
+    pub uploaded: u32,
     /// the total amount downloaded so far, 0 as default
-    pub downloaded: usize,
+    pub downloaded: u32,
     /// number of bytes left to download, total length of file as default
-    pub left: usize,
+    pub left: u32,
     // whether the peer list should use the compact representation
     // set true as default. used mostly for backward compatibily
-    pub compact: usize,
+    pub compact: u32,
 }
 
 pub async fn get_peers(torrent: &Torrent) -> anyhow::Result<Vec<SocketAddrV4>> {
