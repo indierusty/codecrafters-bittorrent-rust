@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use crate::value::*;
-use anyhow::Error;
+use anyhow::{Context, Error};
+use bytes::BufMut;
 use sha1::{Digest, Sha1};
 
 #[derive(Debug)]
@@ -27,8 +28,8 @@ impl Torrent {
         }
     }
 
-    pub fn piece_hashes(&self) -> Vec<&[u8]> {
-        self.info.pieces.chunks(20).collect()
+    pub fn piece_hashes(&self) -> &Vec<[u8; 20]> {
+        &self.info.pieces
     }
 }
 
@@ -36,12 +37,12 @@ impl Torrent {
 pub struct Info {
     // size of the file in bytes, for single-file torrents
     pub length: usize,
-    // suggested name to save a file
-    pub name: Vec<u8>,
+    // suggested name to save a file UTF-8 encoded
+    pub name: String,
     // number of bytes in each piece
     pub piece_length: usize,
     // concatenated SHA-1 hashes of each piece
-    pub pieces: Vec<u8>,
+    pub pieces: Vec<[u8; 20]>,
 }
 
 impl Info {
@@ -53,8 +54,8 @@ impl Info {
                 return Err(Error::msg("cannot get Length from Info dict."));
             };
 
-            let name: Vec<u8> = if let Value::String(a) = info[&b"name"[..]].clone() {
-                a
+            let name: String = if let Value::String(a) = info[&b"name"[..]].clone() {
+                String::from_utf8(a).context("info name must be UTF-8 encoded")?
             } else {
                 return Err(Error::msg("cannot parse Info Name"));
             };
@@ -65,8 +66,11 @@ impl Info {
                 return Err(Error::msg("cannot parse Info piece length"));
             };
 
-            let pieces = if let Value::String(a) = info[&b"pieces"[..]].clone() {
-                a
+            let pieces: Vec<[u8; 20]> = if let Value::String(a) = info[&b"pieces"[..]].clone() {
+                // TODO: validate if value len is exact multiple of 20 and non-zero and return error
+                a.chunks_exact(20)
+                    .map(|c| std::array::from_fn(|i| c[i]))
+                    .collect()
             } else {
                 return Err(Error::msg("cannot parse Info peices"));
             };
@@ -85,12 +89,21 @@ impl Info {
     pub fn to_value(&self) -> Value {
         let mut map = BTreeMap::new();
         map.insert(b"length"[..].to_vec(), Value::Integer(self.length as isize));
-        map.insert(b"name"[..].to_vec(), Value::String(self.name.clone()));
+        map.insert(
+            b"name"[..].to_vec(),
+            Value::String(self.name.as_bytes().to_vec()),
+        );
         map.insert(
             b"piece length"[..].to_vec(),
             Value::Integer(self.piece_length as isize),
         );
-        map.insert(b"pieces"[..].to_vec(), Value::String(self.pieces.clone()));
+        map.insert(
+            b"pieces"[..].to_vec(),
+            Value::String(self.pieces.iter().fold(Vec::new(), |mut acc, v| {
+                acc.put_slice(v);
+                acc
+            })),
+        );
         Value::Dict(map)
     }
 

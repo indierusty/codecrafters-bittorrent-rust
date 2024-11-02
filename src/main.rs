@@ -5,7 +5,7 @@ use bytes::BufMut;
 use std::env;
 use std::fs;
 use std::net::SocketAddrV4;
-// use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 mod peer;
 mod torrent;
@@ -51,8 +51,8 @@ async fn main() -> anyhow::Result<()> {
             );
             println!("Piece Length: {}", torrent.info.piece_length);
             println!("Piece Hashes:");
-            for hash in &piece_hashes {
-                for p in *hash {
+            for hash in piece_hashes {
+                for p in hash {
                     print!("{:02x}", p);
                 }
                 println!();
@@ -87,116 +87,130 @@ async fn main() -> anyhow::Result<()> {
 
             let torrent = parse_torrent_file(&torrent_path).context("parse torrent file")?;
             let piece_index = piece_index.parse::<u32>().expect("piece index must be u32");
-            let info_hash = torrent.info.hash();
             let my_peer_id = b"randombyterandombyte";
             let peers = get_peers(&torrent).await?;
+            let info = &torrent.info;
 
             let (_handshake_msg, mut peer_stream) =
-                handsake_peer(peers[1], info_hash, *my_peer_id).await?;
+                handsake_peer(peers[1], info.hash(), *my_peer_id).await?;
 
             // recieve [bitfield] message
-            {
-                let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
+            let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
+            if pmf.msg_type != MsgType::Bitfield {
+                todo!()
             }
             // send [interested] message
-            {
-                let pmf = PeerMsgFrame::new(MsgType::Interested, Vec::new());
-                pmf.write(&mut peer_stream).await?;
-            }
+            let pmf = PeerMsgFrame::new(MsgType::Interested, Vec::new());
+            pmf.write(&mut peer_stream).await?;
             // recieve unchoke message
-            {
-                let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
-                assert_eq!(pmf.msg_type, MsgType::Unchoke);
+            let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
+            if pmf.msg_type != MsgType::Unchoke {
+                todo!()
             }
 
-            let info = torrent.info.clone();
-            let npieces = info.pieces.chunks(20).count() as u32;
-            let piece_len = if piece_index == npieces - 1 {
-                let md = info.length % info.piece_length;
-                if md == 0 {
-                    info.piece_length
-                } else {
-                    md
-                }
+            let npieces = info.pieces.len() as u32;
+            let rem = info.length % info.piece_length;
+            let piece_len = if piece_index == npieces - 1 && rem != 0 {
+                rem
             } else {
                 info.piece_length
             };
 
-            let sixteen_kb = 16 * 1024;
-
-            let mut blocks = Vec::<(usize, usize)>::new();
-            let total_blocks = if piece_len % sixteen_kb == 0 {
-                piece_len / sixteen_kb
-            } else {
-                piece_len / sixteen_kb + 1
-            };
-
-            for block_index in 0..total_blocks {
-                let begin = sixteen_kb * block_index;
-                let mut length = sixteen_kb;
-
-                if block_index == total_blocks - 1 {
-                    let remaining = piece_len % sixteen_kb;
-                    length = if remaining == 0 {
-                        sixteen_kb
-                    } else {
-                        remaining
-                    };
-                }
-                blocks.push((begin, length));
-            }
-
-            let mut blocks_recieved = Vec::<(usize, Vec<u8>)>::new();
-            for five_blocks_mx in blocks.chunks(5) {
-                for (begin, length) in five_blocks_mx {
-                    let mut payload = Vec::new();
-                    payload.put_slice(&(piece_index as u32).to_be_bytes());
-                    payload.put_slice(&(*begin as u32).to_be_bytes());
-                    payload.put_slice(&(*length as u32).to_be_bytes());
-                    assert_eq!(
-                        *length as u32,
-                        u32::from_be_bytes([payload[8], payload[9], payload[10], payload[11]])
-                    );
-
-                    let pmf = PeerMsgFrame::new(MsgType::Request, payload);
-                    pmf.write(&mut peer_stream).await?;
-                }
-
-                for (begin, length) in five_blocks_mx {
-                    let pmf = PeerMsgFrame::read(&mut peer_stream)
-                        .await
-                        .context("read message")?;
-
-                    let index = u32::from_be_bytes([
-                        pmf.payload[0],
-                        pmf.payload[1],
-                        pmf.payload[2],
-                        pmf.payload[3],
-                    ]);
-                    assert_eq!(index, piece_index);
-                    let begin = u32::from_be_bytes([
-                        pmf.payload[4],
-                        pmf.payload[5],
-                        pmf.payload[6],
-                        pmf.payload[7],
-                    ]);
-                    let data = &pmf.payload[8..];
-                    assert_eq!(data.len(), *length);
-                    blocks_recieved.push((begin as usize, data.to_vec()));
-                    dbg!(&blocks_recieved.len());
-                }
-            }
-
-            let mut file = Vec::new();
-            for (_, data) in blocks_recieved {
-                file.put_slice(&data);
-            }
-
-            fs::write(output_path, file).expect("write piece to file");
+            let piece = download_piece(piece_index, piece_len, &mut peer_stream).await?;
+            fs::write(output_path, piece).expect("write piece to file");
         }
         _ => {}
     }
     Ok(())
+}
+
+async fn download_piece(
+    piece_index: u32,
+    piece_len: usize,
+    peer_stream: &mut TcpStream,
+) -> anyhow::Result<Vec<u8>> {
+    const SIXTEEN_KB: usize = 16 * 1024;
+
+    struct Block {
+        index: usize,
+        begin: usize,
+        length: usize,
+        data: Vec<u8>,
+    }
+
+    impl Block {
+        fn new(index: usize, begin: usize, length: usize) -> Self {
+            Self {
+                index,
+                begin,
+                length,
+                data: Vec::with_capacity(length),
+            }
+        }
+    }
+
+    let nblocks = if piece_len % SIXTEEN_KB == 0 {
+        piece_len / SIXTEEN_KB
+    } else {
+        piece_len / SIXTEEN_KB + 1
+    };
+
+    let mut blocks = Vec::<Block>::new();
+
+    for index in 0..nblocks {
+        let begin = SIXTEEN_KB * index;
+        let rem = piece_len % SIXTEEN_KB;
+        let length = if index == nblocks - 1 && rem != 0 {
+            rem
+        } else {
+            SIXTEEN_KB
+        };
+        blocks.push(Block::new(index, begin, length));
+    }
+
+    for block_chunk in blocks.chunks_mut(5) {
+        for block in block_chunk.iter() {
+            let mut payload = Vec::new();
+            payload.put_slice(&(piece_index as u32).to_be_bytes());
+            payload.put_slice(&(block.begin as u32).to_be_bytes());
+            payload.put_slice(&(block.length as u32).to_be_bytes());
+            assert_eq!(
+                block.length as u32,
+                u32::from_be_bytes([payload[8], payload[9], payload[10], payload[11]])
+            );
+
+            let pmf = PeerMsgFrame::new(MsgType::Request, payload);
+            pmf.write(peer_stream).await?;
+        }
+
+        for block in block_chunk.iter_mut() {
+            let pmf = PeerMsgFrame::read(peer_stream)
+                .await
+                .context("read message")?;
+
+            let index = u32::from_be_bytes([
+                pmf.payload[0],
+                pmf.payload[1],
+                pmf.payload[2],
+                pmf.payload[3],
+            ]);
+            assert_eq!(index, piece_index);
+            let begin = u32::from_be_bytes([
+                pmf.payload[4],
+                pmf.payload[5],
+                pmf.payload[6],
+                pmf.payload[7],
+            ]);
+            let data = &pmf.payload[8..];
+            assert_eq!(data.len(), block.length);
+            block.data.put_slice(data);
+        }
+    }
+    let mut piece = Vec::new();
+    for Block { data, .. } in blocks {
+        piece.put_slice(&data);
+    }
+    Ok(piece)
 }
 
 fn parse_torrent_file(file_path: &str) -> anyhow::Result<Torrent> {
