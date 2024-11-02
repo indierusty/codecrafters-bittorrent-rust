@@ -32,7 +32,7 @@ impl Torrent {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Info {
     // size of the file in bytes, for single-file torrents
     pub length: usize,
@@ -65,7 +65,7 @@ impl Info {
                 return Err(Error::msg("cannot parse Info piece length"));
             };
 
-            let pieces: Vec<u8> = if let Value::String(a) = info[&b"pieces"[..]].clone() {
+            let pieces = if let Value::String(a) = info[&b"pieces"[..]].clone() {
                 a
             } else {
                 return Err(Error::msg("cannot parse Info peices"));
