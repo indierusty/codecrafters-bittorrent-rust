@@ -2,6 +2,8 @@
 #![allow(unused_variables)]
 use anyhow::Context;
 use bytes::BufMut;
+use reqwest::Url;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::net::SocketAddrV4;
@@ -187,6 +189,28 @@ async fn main() -> anyhow::Result<()> {
                 acc
             });
             fs::write(output_path, file).expect("write downloaded pieces to file");
+        }
+        "magnet_parse" => {
+            let magnet_link = args.next().expect("magnet-link");
+            let url = Url::parse(&magnet_link).unwrap();
+            let pairs = url.query_pairs().fold(HashMap::new(), |mut acc, q| {
+                acc.insert(q.0, q.1);
+                acc
+            });
+
+            let tracker_url = pairs
+                .get("tr")
+                .context("magnet-link doesn't have tracker url")?;
+            let name = pairs.get("dn").context("magnet-link doesn't have name");
+            let info_hash = pairs
+                .get("xt")
+                .context("magnet-link doesn't have info hash")?
+                .split(':')
+                .last()
+                .unwrap();
+
+            println!("Tracker URL: {}", tracker_url);
+            println!("Info Hash: {}", info_hash);
         }
         _ => {}
     }
