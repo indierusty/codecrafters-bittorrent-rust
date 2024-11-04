@@ -322,6 +322,97 @@ async fn main() -> anyhow::Result<()> {
             let piece = download_piece(piece_index, piece_len, &mut peer_stream).await?;
             fs::write(output_path, piece).expect("write piece to file");
         }
+        "magnet_download" => {
+            let _ = args.next().context("expected -o")?;
+            let output_path = args.next().context("get output path")?;
+            let magnet_link = args.next().context("get torrent file path")?;
+
+            let torrent = get_torrent_using_magnet(&magnet_link).await?;
+            let peers = get_peers(&torrent, &PEER_ID).await?;
+            let info = &torrent.info;
+
+            // connect to a peer
+            let mut peer_stream = None;
+            for i in 0..peers.len() {
+                let (_handshake_msg, mut stream) =
+                    handshake_peer(peers[i], &info.hash(), &PEER_ID).await?;
+
+                // recieve [bitfield] message
+                let pmf = PeerMsgFrame::read(&mut stream).await?;
+                if pmf.msg_id != MsgID::Bitfield {
+                    eprintln!("Didn't recieve unchocke msgid, got {:?}", pmf.msg_id);
+                    continue;
+                }
+
+                // send [interested] message
+                let pmf = PeerMsgFrame::new(MsgID::Interested, Vec::new());
+                pmf.write(&mut stream).await?;
+
+                // TODO: peer replie with unchoke message after this Extended Msg read. find out why?
+                let pmf = PeerMsgFrame::read(&mut stream).await?;
+
+                // recieve unchoke message
+                let pmf = PeerMsgFrame::read(&mut stream).await?;
+                if pmf.msg_id != MsgID::Unchoke {
+                    eprintln!("Didn't recieve unchocke msgid, got {:?}", pmf.msg_id);
+                    continue;
+                }
+
+                peer_stream = Some(stream);
+                break;
+            }
+
+            let mut peer_stream = if let Some(stream) = peer_stream {
+                stream
+            } else {
+                return Err(anyhow::Error::msg("Could not connect to any peer"));
+            };
+
+            // calculate peices
+            struct Piece {
+                index: u32,
+                length: u32,
+                data: Vec<u8>,
+            }
+
+            impl Piece {
+                fn new(index: u32, length: u32) -> Self {
+                    Self {
+                        index,
+                        length,
+                        data: Vec::new(),
+                    }
+                }
+            }
+
+            let npieces = info.pieces.len() as u32;
+            let mut pieces = Vec::new();
+            for i in 0..npieces {
+                // calculate piece length in bytes
+                let rem = info.length % info.piece_length;
+                let len = if i == npieces - 1 && rem != 0 {
+                    rem
+                } else {
+                    info.piece_length
+                };
+
+                pieces.push(Piece::new(i, len as u32));
+            }
+
+            // dowload peices from peer
+            for piece in &mut pieces {
+                let mut data = download_piece(piece.index, piece.length, &mut peer_stream).await?;
+                piece.data.append(&mut data);
+            }
+
+            // sort peices and save to file
+            pieces.sort_by(|a, b| a.index.cmp(&b.index));
+            let file = pieces.iter_mut().fold(Vec::new(), |mut acc, p| {
+                acc.append(&mut p.data);
+                acc
+            });
+            fs::write(output_path, file).expect("write downloaded pieces to file");
+        }
         _ => {}
     }
     Ok(())
