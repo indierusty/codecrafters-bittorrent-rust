@@ -83,15 +83,9 @@ impl Value {
         }
     }
 
-    pub fn decode(encoded_value: &[u8]) -> anyhow::Result<Self> {
+    pub fn decode(encoded_value: &[u8]) -> anyhow::Result<(Self, &[u8])> {
         let (value, rest) = decode_bencoded_value(encoded_value)?;
-        if !rest.is_empty() {
-            return Err(anyhow::Error::msg(
-                "some bytes cannot be docoded into value",
-            ));
-        }
-
-        Ok(value)
+        Ok((value, rest))
     }
 
     pub fn to_json(&self) -> serde_json::Value {

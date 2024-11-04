@@ -86,7 +86,7 @@ pub async fn get_peers(
 
     let response = reqwest::get(&request_url).await.context("query tracker")?;
 
-    let value = Value::decode(&response.bytes().await?)?;
+    let (value, _rest) = Value::decode(&response.bytes().await?)?;
     let tracker_res = TrackerResponse::from_value(value)?;
 
     let mut peers = Vec::new();

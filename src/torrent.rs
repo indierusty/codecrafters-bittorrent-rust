@@ -66,7 +66,7 @@ pub struct Info {
 }
 
 impl Info {
-    fn from_value(value: &Value) -> anyhow::Result<Self> {
+    pub fn from_value(value: &Value) -> anyhow::Result<Self> {
         if let Value::Dict(info) = value {
             let length = if let Value::Integer(a) = info[&b"length"[..]] {
                 a as u32

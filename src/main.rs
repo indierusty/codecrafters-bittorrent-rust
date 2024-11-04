@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
         "decode" => {
             let encoded_value = args.next().expect("encoded value");
             let decoded_value = Value::decode(&encoded_value.as_bytes())?;
-            println!("{}", decoded_value.to_json());
+            println!("{}", decoded_value.0.to_json());
         }
         "info" => {
             let file_path = args.next().expect("path to torrent file");
@@ -240,7 +240,7 @@ async fn main() -> anyhow::Result<()> {
             // 6. Receive Extension Handshake Msg
             let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
             let extension_msg = Value::decode(&pmf.payload[1..])?;
-            let ut_metadata_id = extension_msg.to_json()["m"]["ut_metadata"]
+            let ut_metadata_id = extension_msg.0.to_json()["m"]["ut_metadata"]
                 .clone()
                 .as_i64()
                 .unwrap() as u32;
@@ -289,13 +289,10 @@ async fn main() -> anyhow::Result<()> {
             // 6. Receive Extension Handshake Msg
             let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
             let extension_msg = Value::decode(&pmf.payload[1..])?;
-            let ut_metadata_id: u8 = extension_msg.to_json()["m"]["ut_metadata"]
+            let ut_metadata_id: u8 = extension_msg.0.to_json()["m"]["ut_metadata"]
                 .clone()
                 .as_i64()
                 .unwrap() as u8;
-
-            println!("Peer ID: {}", hex::encode(peer_id));
-            println!("Peer Metadata Extension ID: {}", ut_metadata_id);
 
             // 7. request info using Metadata extension Messages
             // {  msg_type will be 0 since this is a request message
@@ -315,6 +312,31 @@ async fn main() -> anyhow::Result<()> {
             // 8. Request MetaInfo using Metadata Extension Msg
             let pmf = PeerMsgFrame::new(MsgID::Extended, payload);
             pmf.write(&mut peer_stream).await?;
+
+            // 9. Read MetaInfo
+            let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
+            let (msg, rest) = Value::decode(&pmf.payload[1..])?;
+            let metadata_size: usize =
+                msg.to_json()["total_size"].take().as_u64().unwrap() as usize;
+            let (metadata, _rest) = Value::decode(rest)?;
+            let meta_info = Info::from_value(&metadata)?;
+
+            let torrent = Torrent {
+                announce: magnet.announce().as_bytes().to_vec(),
+                info: meta_info,
+            };
+
+            println!("Tracker URL: {}", torrent.announce());
+            println!("Length: {}", torrent.length());
+            println!("Info Hash: {}", hex::encode(torrent.info_hash()));
+            println!("Piece Length: {}", torrent.info.piece_length);
+            println!("Piece Hashes:");
+            for hash in torrent.piece_hashes() {
+                for p in hash {
+                    print!("{:02x}", p);
+                }
+                println!();
+            }
         }
         _ => {}
     }
@@ -412,7 +434,7 @@ async fn download_piece(
 
 fn parse_torrent_file(file_path: &str) -> anyhow::Result<Torrent> {
     let file = fs::read(file_path).context("read torrent file")?;
-    let decoded_value = Value::decode(&file).context("decode bencode value")?;
+    let decoded_value = Value::decode(&file).context("decode bencode value")?.0;
     let torrent = Torrent::from_value(&decoded_value).context("parse MetaInfo from value")?;
     Ok(torrent)
 }
