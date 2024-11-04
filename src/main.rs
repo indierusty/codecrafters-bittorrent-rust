@@ -250,81 +250,7 @@ async fn main() -> anyhow::Result<()> {
         }
         "magnet_info" => {
             let magnet_link = args.next().expect("magnet-link");
-            let magnet = Magnet::parse(&magnet_link)?;
-            let peers = get_peers(&magnet, &PEER_ID).await?;
-
-            // 1. Establish a TCP connection with a peer
-            // 2. Send the base handshake message
-            // 3. Receive the base handshake message
-            let (handshake_msg, mut peer_stream) =
-                handshake_peer(peers[0], &magnet.info_hash, &PEER_ID).await?;
-            let peer_id = handshake_msg.peer_id;
-
-            // 4. Receive the bitfield message
-            let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
-            if pmf.msg_id != MsgID::Bitfield {
-                return Err(anyhow::Error::msg("did not recived bitfield msg"));
-            }
-
-            if !handshake_msg.is_supporting_extention() {
-                return Err(anyhow::Error::msg("Peer does not support extension"));
-            }
-
-            let extension_json = json!({
-                "m": {
-                    "ut_metadata": 1,
-                    "ut_pex": 2,
-                },
-            });
-
-            let extension_value = Value::from_json(&extension_json)?;
-            let mut extension_payload = Vec::new();
-            extension_payload.push(0);
-            extension_payload.append(&mut extension_value.encode());
-
-            // 5. Send Extension Handshake Msg
-            let pmf = PeerMsgFrame::new(MsgID::Extended, extension_payload);
-            pmf.write(&mut peer_stream).await?;
-
-            // 6. Receive Extension Handshake Msg
-            let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
-            let extension_msg = Value::decode(&pmf.payload[1..])?;
-            let ut_metadata_id: u8 = extension_msg.0.to_json()["m"]["ut_metadata"]
-                .clone()
-                .as_i64()
-                .unwrap() as u8;
-
-            // 7. request info using Metadata extension Messages
-            // {  msg_type will be 0 since this is a request message
-            //    piece is the zero-based piece index of the metadata being requested
-            //    Since we're only requesting one piece in this challenge, this will always be 0
-            // }
-            let metadata_request_msg = json!({
-                "msg_type": 0,
-                "piece": 0,
-            });
-
-            let value = Value::from_json(&metadata_request_msg)?;
-            let mut payload = Vec::new();
-            payload.push(ut_metadata_id);
-            payload.append(&mut value.encode());
-
-            // 8. Request MetaInfo using Metadata Extension Msg
-            let pmf = PeerMsgFrame::new(MsgID::Extended, payload);
-            pmf.write(&mut peer_stream).await?;
-
-            // 9. Read MetaInfo
-            let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
-            let (msg, rest) = Value::decode(&pmf.payload[1..])?;
-            let metadata_size: usize =
-                msg.to_json()["total_size"].take().as_u64().unwrap() as usize;
-            let (metadata, _rest) = Value::decode(rest)?;
-            let meta_info = Info::from_value(&metadata)?;
-
-            let torrent = Torrent {
-                announce: magnet.announce().as_bytes().to_vec(),
-                info: meta_info,
-            };
+            let torrent = get_torrent_using_magnet(&magnet_link).await?;
 
             println!("Tracker URL: {}", torrent.announce());
             println!("Length: {}", torrent.length());
@@ -338,9 +264,146 @@ async fn main() -> anyhow::Result<()> {
                 println!();
             }
         }
+        "magnet_download_piece" => {
+            let _ = args.next().context("expected -o")?;
+            let output_path = args.next().context("get output path")?;
+            let magnet_link = args.next().context("get torrent file path")?;
+            let piece_index = args.next().context("get piece index to download")?;
+
+            let piece_index = piece_index.parse::<u32>().expect("piece index must be u32");
+            let torrent = get_torrent_using_magnet(&magnet_link).await?;
+            let peers = get_peers(&torrent, &PEER_ID).await?;
+            let info = &torrent.info;
+
+            let mut peer_stream = None;
+            for i in 0..peers.len() {
+                let (_handshake_msg, mut stream) =
+                    handshake_peer(peers[i], &info.hash(), &PEER_ID).await?;
+
+                // recieve [bitfield] message
+                let pmf = PeerMsgFrame::read(&mut stream).await?;
+                if pmf.msg_id != MsgID::Bitfield {
+                    eprintln!("Didn't recieve unchocke msgid, got {:?}", pmf.msg_id);
+                    continue;
+                }
+
+                // send [interested] message
+                let pmf = PeerMsgFrame::new(MsgID::Interested, Vec::new());
+                pmf.write(&mut stream).await?;
+
+                // TODO: peer replie with unchoke message after this Extended Msg read. find out why?
+                let pmf = PeerMsgFrame::read(&mut stream).await?;
+
+                // recieve unchoke message
+                let pmf = PeerMsgFrame::read(&mut stream).await?;
+                if pmf.msg_id != MsgID::Unchoke {
+                    eprintln!("Didn't recieve unchocke msgid, got {:?}", pmf.msg_id);
+                    continue;
+                }
+
+                peer_stream = Some(stream);
+                break;
+            }
+
+            let mut peer_stream = if let Some(stream) = peer_stream {
+                stream
+            } else {
+                return Err(anyhow::Error::msg("Could not connect to any peer"));
+            };
+
+            let npieces = info.pieces.len() as u32;
+            let rem = info.length % info.piece_length;
+            let piece_len = if piece_index == npieces - 1 && rem != 0 {
+                rem
+            } else {
+                info.piece_length
+            };
+
+            let piece = download_piece(piece_index, piece_len, &mut peer_stream).await?;
+            fs::write(output_path, piece).expect("write piece to file");
+        }
         _ => {}
     }
     Ok(())
+}
+
+async fn get_torrent_using_magnet(magnet_link: &str) -> anyhow::Result<Torrent> {
+    let magnet = Magnet::parse(&magnet_link)?;
+    let peers = get_peers(&magnet, &PEER_ID).await?;
+
+    // 1. Establish a TCP connection with a peer
+    // 2. Send the base handshake message
+    // 3. Receive the base handshake message
+    let (handshake_msg, mut peer_stream) =
+        handshake_peer(peers[0], &magnet.info_hash, &PEER_ID).await?;
+    let peer_id = handshake_msg.peer_id;
+
+    // 4. Receive the bitfield message
+    let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
+    if pmf.msg_id != MsgID::Bitfield {
+        return Err(anyhow::Error::msg("did not recived bitfield msg"));
+    }
+
+    if !handshake_msg.is_supporting_extention() {
+        return Err(anyhow::Error::msg("Peer does not support extension"));
+    }
+
+    let extension_json = json!({
+        "m": {
+            "ut_metadata": 1,
+            "ut_pex": 2,
+        },
+    });
+
+    let extension_value = Value::from_json(&extension_json)?;
+    let mut extension_payload = Vec::new();
+    extension_payload.push(0);
+    extension_payload.append(&mut extension_value.encode());
+
+    // 5. Send Extension Handshake Msg
+    let pmf = PeerMsgFrame::new(MsgID::Extended, extension_payload);
+    pmf.write(&mut peer_stream).await?;
+
+    // 6. Receive Extension Handshake Msg
+    let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
+    let extension_msg = Value::decode(&pmf.payload[1..])?;
+    let ut_metadata_id: u8 = extension_msg.0.to_json()["m"]["ut_metadata"]
+        .clone()
+        .as_i64()
+        .unwrap() as u8;
+
+    // 7. request info using Metadata extension Messages
+    // {  msg_type will be 0 since this is a request message
+    //    piece is the zero-based piece index of the metadata being requested
+    //    Since we're only requesting one piece in this challenge, this will always be 0
+    // }
+    let metadata_request_msg = json!({
+        "msg_type": 0,
+        "piece": 0,
+    });
+
+    let value = Value::from_json(&metadata_request_msg)?;
+    let mut payload = Vec::new();
+    payload.push(ut_metadata_id);
+    payload.append(&mut value.encode());
+
+    // 8. Request MetaInfo using Metadata Extension Msg
+    let pmf = PeerMsgFrame::new(MsgID::Extended, payload);
+    pmf.write(&mut peer_stream).await?;
+
+    // 9. Read MetaInfo
+    let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
+    let (msg, rest) = Value::decode(&pmf.payload[1..])?;
+    let metadata_size: usize = msg.to_json()["total_size"].take().as_u64().unwrap() as usize;
+    let (metadata, _rest) = Value::decode(rest)?;
+    let meta_info = Info::from_value(&metadata)?;
+
+    let torrent = Torrent {
+        announce: magnet.announce().as_bytes().to_vec(),
+        info: meta_info,
+    };
+
+    Ok(torrent)
 }
 
 async fn download_piece(
