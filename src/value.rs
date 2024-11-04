@@ -115,6 +115,31 @@ impl Value {
             }
         }
     }
+
+    pub fn from_json(json: &serde_json::Value) -> anyhow::Result<Value> {
+        match json {
+            serde_json::Value::Number(n) => Ok(Value::Integer(n.as_i64().unwrap() as isize)),
+            serde_json::Value::String(s) => Ok(Value::String((*s).as_bytes().to_vec())),
+            serde_json::Value::Array(a) => {
+                let mut values = Vec::new();
+                for value in a {
+                    let v = Value::from_json(value)?;
+                    values.push(v);
+                }
+                Ok(Value::Array(values))
+            }
+            serde_json::Value::Object(o) => {
+                let mut dict = BTreeMap::new();
+                for (k, v) in o {
+                    let key = k.as_bytes().to_vec();
+                    let value = Value::from_json(v)?;
+                    dict.insert(key, value);
+                }
+                Ok(Value::Dict(dict))
+            }
+            j => Err(anyhow::Error::msg(format!("value: {} not supported.", j))),
+        }
+    }
 }
 
 pub fn decode_string(mut encoded_value: &[u8]) -> anyhow::Result<(Value, &[u8])> {

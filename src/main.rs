@@ -2,6 +2,7 @@
 #![allow(unused_variables)]
 use anyhow::Context;
 use bytes::BufMut;
+use serde_json::json;
 use std::env;
 use std::fs;
 use std::net::SocketAddrV4;
@@ -99,15 +100,15 @@ async fn main() -> anyhow::Result<()> {
 
             // recieve [bitfield] message
             let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
-            if pmf.msg_type != MsgType::Bitfield {
+            if pmf.msg_id != MsgID::Bitfield {
                 todo!()
             }
             // send [interested] message
-            let pmf = PeerMsgFrame::new(MsgType::Interested, Vec::new());
+            let pmf = PeerMsgFrame::new(MsgID::Interested, Vec::new());
             pmf.write(&mut peer_stream).await?;
             // recieve unchoke message
             let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
-            if pmf.msg_type != MsgType::Unchoke {
+            if pmf.msg_id != MsgID::Unchoke {
                 todo!()
             }
 
@@ -167,15 +168,15 @@ async fn main() -> anyhow::Result<()> {
 
             // recieve [bitfield] message
             let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
-            if pmf.msg_type != MsgType::Bitfield {
+            if pmf.msg_id != MsgID::Bitfield {
                 todo!()
             }
             // send [interested] message
-            let pmf = PeerMsgFrame::new(MsgType::Interested, Vec::new());
+            let pmf = PeerMsgFrame::new(MsgID::Interested, Vec::new());
             pmf.write(&mut peer_stream).await?;
             // recieve unchoke message
             let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
-            if pmf.msg_type != MsgType::Unchoke {
+            if pmf.msg_id != MsgID::Unchoke {
                 todo!()
             }
 
@@ -203,10 +204,39 @@ async fn main() -> anyhow::Result<()> {
             let magnet = Magnet::parse(&magnet_link)?;
             let peers = get_peers(&magnet, &PEER_ID).await?;
 
-            let (handshake_msg, _peer_stream) =
+            let (handshake_msg, mut peer_stream) =
                 handshake_peer(peers[0], &magnet.info_hash, &PEER_ID).await?;
 
+            let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
+            if pmf.msg_id != MsgID::Bitfield {
+                return Err(anyhow::Error::msg("did not recived bitfield msg"));
+            }
+
             println!("Peer ID: {}", hex::encode(handshake_msg.peer_id));
+
+            if !handshake_msg.is_supporting_extention() {
+                return Err(anyhow::Error::msg("Peer does not support extension"));
+            }
+
+            let extension_json = json!({
+                "m": {
+                    "ut_metadata": 1,
+                    "ut_pex": 2,
+                },
+            });
+
+            let extension_value = Value::from_json(&extension_json)?;
+            let mut extension_payload = Vec::new();
+            extension_payload.push(0);
+            extension_payload.append(&mut extension_value.encode());
+
+            // send extension handshke msg
+            let pmf = PeerMsgFrame::new(MsgID::Extended, extension_payload);
+            pmf.write(&mut peer_stream).await?;
+
+            // receive extension handshke msg
+            let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
+            eprintln!("{:?}, {:?}", pmf.msg_id, Value::decode(&pmf.payload[1..]));
         }
         _ => {}
     }
@@ -268,7 +298,7 @@ async fn download_piece(
                 u32::from_be_bytes([payload[8], payload[9], payload[10], payload[11]])
             );
 
-            let pmf = PeerMsgFrame::new(MsgType::Request, payload);
+            let pmf = PeerMsgFrame::new(MsgID::Request, payload);
             pmf.write(peer_stream).await?;
         }
 

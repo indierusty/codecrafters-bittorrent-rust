@@ -7,7 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum MsgType {
+pub enum MsgID {
     Choke = 0,
     Unchoke = 1,
     Interested = 2,
@@ -17,35 +17,37 @@ pub enum MsgType {
     Request = 6,
     Piece = 7,
     Cancel = 8,
+    Extended = 20, // add support for extension system protocol
 }
 
 #[derive(Debug)]
 pub struct PeerMsgFrame {
     /// first 4 bytes are length of payload and rest 1 byte is Msg ID
-    pub msg_type: MsgType,
+    pub msg_id: MsgID,
     /// payload of variable size of length given in prefix
     pub payload: Vec<u8>,
 }
 
 impl PeerMsgFrame {
-    pub fn new(msg_type: MsgType, payload: Vec<u8>) -> Self {
-        Self { msg_type, payload }
+    pub fn new(msg_id: MsgID, payload: Vec<u8>) -> Self {
+        Self { msg_id, payload }
     }
 
     pub async fn read(stream: &mut TcpStream) -> anyhow::Result<Self> {
         let mut buf = vec![0u8; 5];
         stream.read_exact(&mut buf).await?;
 
-        let msg_type = match buf[4] {
-            0 => MsgType::Choke,
-            1 => MsgType::Unchoke,
-            2 => MsgType::Interested,
-            3 => MsgType::NotInterested,
-            4 => MsgType::Have,
-            5 => MsgType::Bitfield,
-            6 => MsgType::Request,
-            7 => MsgType::Piece,
-            8 => MsgType::Cancel,
+        let msg_id = match buf[4] {
+            0 => MsgID::Choke,
+            1 => MsgID::Unchoke,
+            2 => MsgID::Interested,
+            3 => MsgID::NotInterested,
+            4 => MsgID::Have,
+            5 => MsgID::Bitfield,
+            6 => MsgID::Request,
+            7 => MsgID::Piece,
+            8 => MsgID::Cancel,
+            20 => MsgID::Extended,
             m => return Err(Error::msg(format!("Unknown message type {}.", m))),
         };
 
@@ -56,7 +58,7 @@ impl PeerMsgFrame {
             _ = stream.read_exact(&mut payload).await?;
         }
 
-        Ok(Self { msg_type, payload })
+        Ok(Self { msg_id, payload })
     }
 
     pub async fn write(&self, stream: &mut TcpStream) -> anyhow::Result<()> {
@@ -69,8 +71,8 @@ impl PeerMsgFrame {
     fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         // NOTE: + 1 for length of MsgType
-        buf.put_slice(&(self.payload.len() + 1).to_be_bytes());
-        buf.put_u8(self.msg_type as u8);
+        buf.put_slice(&(self.payload.len() as u32 + 1u32).to_be_bytes());
+        buf.put_u8(self.msg_id as u8);
         buf.put(&self.payload[..]);
         buf
     }
@@ -102,6 +104,11 @@ impl HandshakeMsg {
             info_hash,
             peer_id,
         }
+    }
+
+    pub fn is_supporting_extention(&self) -> bool {
+        let bit = 1 << 4;
+        self.reserved_bytes[5] & bit == bit
     }
 }
 
