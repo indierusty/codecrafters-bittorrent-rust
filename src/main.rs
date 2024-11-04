@@ -204,15 +204,18 @@ async fn main() -> anyhow::Result<()> {
             let magnet = Magnet::parse(&magnet_link)?;
             let peers = get_peers(&magnet, &PEER_ID).await?;
 
+            // 1. Establish a TCP connection with a peer
+            // 2. Send the base handshake message
+            // 3. Receive the base handshake message
             let (handshake_msg, mut peer_stream) =
                 handshake_peer(peers[0], &magnet.info_hash, &PEER_ID).await?;
+            let peer_id = handshake_msg.peer_id;
 
+            // 4. Receive the bitfield message
             let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
             if pmf.msg_id != MsgID::Bitfield {
                 return Err(anyhow::Error::msg("did not recived bitfield msg"));
             }
-
-            println!("Peer ID: {}", hex::encode(handshake_msg.peer_id));
 
             if !handshake_msg.is_supporting_extention() {
                 return Err(anyhow::Error::msg("Peer does not support extension"));
@@ -230,13 +233,20 @@ async fn main() -> anyhow::Result<()> {
             extension_payload.push(0);
             extension_payload.append(&mut extension_value.encode());
 
-            // send extension handshke msg
+            // 5. Send Extension Handshake Msg
             let pmf = PeerMsgFrame::new(MsgID::Extended, extension_payload);
             pmf.write(&mut peer_stream).await?;
 
-            // receive extension handshke msg
+            // 6. Receive Extension Handshake Msg
             let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
-            eprintln!("{:?}, {:?}", pmf.msg_id, Value::decode(&pmf.payload[1..]));
+            let extension_msg = Value::decode(&pmf.payload[1..])?;
+            let ut_metadata_id = extension_msg.to_json()["m"]["ut_metadata"]
+                .clone()
+                .as_i64()
+                .unwrap() as u32;
+
+            println!("Peer ID: {}", hex::encode(peer_id));
+            println!("Peer Metadata Extension ID: {}", ut_metadata_id);
         }
         _ => {}
     }
