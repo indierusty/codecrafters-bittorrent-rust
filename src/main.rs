@@ -2,22 +2,24 @@
 #![allow(unused_variables)]
 use anyhow::Context;
 use bytes::BufMut;
-use reqwest::Url;
-use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::net::SocketAddrV4;
 use tokio::net::TcpStream;
 
+mod magnet;
 mod peer;
 mod torrent;
 mod tracker;
 mod value;
 
+use magnet::*;
 use peer::*;
 use torrent::*;
 use tracker::*;
 use value::*;
+
+const PEER_ID: [u8; 20] = *b"code5craf5ters5code5";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -63,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
         "peers" => {
             let file_path = args.next().expect("path to torrent file");
             let torrent = parse_torrent_file(&file_path)?;
-            let peers = get_peers(&torrent).await?;
+            let peers = get_peers(&torrent, &PEER_ID).await?;
             for peer in peers {
                 println!("{}:{}", peer.ip(), peer.port());
             }
@@ -77,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
             let peer_address = peer_add.parse::<SocketAddrV4>().unwrap();
 
             let (handshake_msg, _peer_stream) =
-                handsake_peer(peer_address, info_hash, *b"asdf5asdf5asdf5asdf5").await?;
+                handshake_peer(peer_address, &info_hash, &PEER_ID).await?;
 
             println!("Peer ID: {}", hex::encode(&handshake_msg.peer_id));
         }
@@ -89,12 +91,11 @@ async fn main() -> anyhow::Result<()> {
 
             let torrent = parse_torrent_file(&torrent_path).context("parse torrent file")?;
             let piece_index = piece_index.parse::<u32>().expect("piece index must be u32");
-            let my_peer_id = b"randombyterandombyte";
-            let peers = get_peers(&torrent).await?;
+            let peers = get_peers(&torrent, &PEER_ID).await?;
             let info = &torrent.info;
 
             let (_handshake_msg, mut peer_stream) =
-                handsake_peer(peers[1], info.hash(), *my_peer_id).await?;
+                handshake_peer(peers[1], &info.hash(), &PEER_ID).await?;
 
             // recieve [bitfield] message
             let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
@@ -128,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
 
             let torrent = parse_torrent_file(&torrent_path).context("parse torrent file")?;
             let my_peer_id = b"randombyterandombyte";
-            let peers = get_peers(&torrent).await?;
+            let peers = get_peers(&torrent, &PEER_ID).await?;
             let info = &torrent.info;
 
             struct Piece {
@@ -162,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let (_handshake_msg, mut peer_stream) =
-                handsake_peer(peers[1], info.hash(), *my_peer_id).await?;
+                handshake_peer(peers[1], &info.hash(), &PEER_ID).await?;
 
             // recieve [bitfield] message
             let pmf = PeerMsgFrame::read(&mut peer_stream).await?;
@@ -192,25 +193,20 @@ async fn main() -> anyhow::Result<()> {
         }
         "magnet_parse" => {
             let magnet_link = args.next().expect("magnet-link");
-            let url = Url::parse(&magnet_link).unwrap();
-            let pairs = url.query_pairs().fold(HashMap::new(), |mut acc, q| {
-                acc.insert(q.0, q.1);
-                acc
-            });
+            let magnet = Magnet::parse(&magnet_link)?;
 
-            let tracker_url = pairs
-                .get("tr")
-                .context("magnet-link doesn't have tracker url")?;
-            let name = pairs.get("dn").context("magnet-link doesn't have name");
-            let info_hash = pairs
-                .get("xt")
-                .context("magnet-link doesn't have info hash")?
-                .split(':')
-                .last()
-                .unwrap();
+            println!("Tracker URL: {}", magnet.tracker_url);
+            println!("Info Hash: {}", hex::encode(magnet.info_hash));
+        }
+        "magnet_handshake" => {
+            let magnet_link = args.next().expect("magnet-link");
+            let magnet = Magnet::parse(&magnet_link)?;
+            let peers = get_peers(&magnet, &PEER_ID).await?;
 
-            println!("Tracker URL: {}", tracker_url);
-            println!("Info Hash: {}", info_hash);
+            let (handshake_msg, _peer_stream) =
+                handshake_peer(peers[0], &magnet.info_hash, &PEER_ID).await?;
+
+            println!("Peer ID: {}", hex::encode(handshake_msg.peer_id));
         }
         _ => {}
     }

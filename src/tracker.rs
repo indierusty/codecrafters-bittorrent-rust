@@ -2,32 +2,27 @@ use anyhow::Context;
 use std::net::Ipv4Addr;
 use std::net::SocketAddrV4;
 
-use crate::{value::Value, Torrent};
+use crate::torrent::TorrentInfo;
+use crate::value::Value;
 
 pub struct TrackerResponse {
-    // An integer, indicating how often your client should make a request to the tracker.
-    // You can ignore this value for the purposes of this challenge.
-    interval: usize,
-    // A string, contains list of peers that your client can connect to.
-    // Each peer is represented using 6 bytes. The first 4 bytes are the peer's IP address and the last 2 bytes are the peer's port number
+    /// An integer, indicating how often your client should make a request to the tracker.
+    /// You can ignore this value for the purposes of this challenge.
+    // interval: usize,
+    /// A string, contains list of peers that your client can connect to.
+    /// Each peer is represented using 6 bytes. The first 4 bytes are the peer's IP address and the last 2 bytes are the peer's port number
     pub peers: Vec<u8>,
 }
 
 impl TrackerResponse {
     pub fn from_value(value: Value) -> anyhow::Result<Self> {
         if let Value::Dict(res) = value {
-            let interval = if let Some(Value::Integer(v)) = res.get(&b"interval"[..]) {
-                *v as usize
-            } else {
-                return Err(anyhow::Error::msg("no interval in tracker response"));
-            };
             let peers = if let Some(Value::String(v)) = res.get(&b"peers"[..]) {
                 v
             } else {
                 return Err(anyhow::Error::msg("no peers in tracker response"));
             };
             return Ok(Self {
-                interval,
                 peers: peers.clone(),
             });
         }
@@ -45,7 +40,7 @@ pub struct TrackerRequest {
     /// port your client is listening on set 6881 for this challenge
     pub port: u32,
     /// a unique identifier for your client of length 20 that you get to pick.
-    pub peer_id: String,
+    pub peer_id: [u8; 20],
     /// the total amount uploaded so far, 0 as default
     pub uploaded: u32,
     /// the total amount downloaded so far, 0 as default
@@ -57,14 +52,17 @@ pub struct TrackerRequest {
     pub compact: u32,
 }
 
-pub async fn get_peers(torrent: &Torrent) -> anyhow::Result<Vec<SocketAddrV4>> {
+pub async fn get_peers(
+    torrent: &impl TorrentInfo,
+    my_peer_id: &[u8; 20],
+) -> anyhow::Result<Vec<SocketAddrV4>> {
     let tracker = TrackerRequest {
-        info_hash: torrent.info.hash(),
+        info_hash: torrent.info_hash(),
         port: 6881,
-        peer_id: "code5craf5ters5code5".to_string(),
+        peer_id: my_peer_id.clone(),
         uploaded: 0,
         downloaded: 0,
-        left: torrent.info.length,
+        left: torrent.length(),
         compact: 1,
     };
 
@@ -76,9 +74,9 @@ pub async fn get_peers(torrent: &Torrent) -> anyhow::Result<Vec<SocketAddrV4>> {
 
     let request_url = format!(
         "{}?port={}&peer_id={}&uploaded={}&downloaded={}&left={}&compact={}&info_hash={}",
-        String::from_utf8(torrent.announce.clone())?,
+        torrent.announce(),
         tracker.port,
-        tracker.peer_id,
+        String::from_utf8(tracker.peer_id.to_vec())?,
         tracker.uploaded,
         tracker.downloaded,
         tracker.left,

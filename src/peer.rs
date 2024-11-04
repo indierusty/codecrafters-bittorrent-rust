@@ -76,6 +76,7 @@ impl PeerMsgFrame {
     }
 }
 
+#[derive(Debug)]
 #[repr(C)]
 pub struct HandshakeMsg {
     /// length of the protocol string (BitTorrent protocol) which is 19 (1 byte)
@@ -92,22 +93,24 @@ pub struct HandshakeMsg {
 
 impl HandshakeMsg {
     pub fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
+        // enable bittorent extention system by setting 20th bit in reserved byte.
+        let reserved_bytes = [0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00];
         Self {
             len: 19,
             string: *b"BitTorrent protocol",
-            reserved_bytes: [0u8; 8],
+            reserved_bytes,
             info_hash,
             peer_id,
         }
     }
 }
 
-pub async fn handsake_peer(
+pub async fn handshake_peer(
     peer_address: SocketAddrV4,
-    info_hash: [u8; 20],
-    my_peer_id: [u8; 20],
+    info_hash: &[u8; 20],
+    my_peer_id: &[u8; 20],
 ) -> anyhow::Result<(HandshakeMsg, TcpStream)> {
-    let mut handshake_msg = HandshakeMsg::new(info_hash, *b"asdf5asdf5asdf5asdf5");
+    let mut handshake_msg = HandshakeMsg::new(info_hash.clone(), my_peer_id.clone());
     let mut peer = tokio::net::TcpStream::connect(peer_address).await.unwrap();
 
     let handshake_msg_bytes =

@@ -11,6 +11,26 @@ pub struct Torrent {
     pub info: Info,
 }
 
+pub trait TorrentInfo {
+    fn announce(&self) -> String;
+    fn info_hash(&self) -> [u8; 20];
+    fn length(&self) -> u32;
+}
+
+impl TorrentInfo for Torrent {
+    fn announce(&self) -> String {
+        String::from_utf8(self.announce.to_vec()).unwrap()
+    }
+
+    fn info_hash(&self) -> [u8; 20] {
+        self.info.hash()
+    }
+
+    fn length(&self) -> u32 {
+        self.info.length
+    }
+}
+
 impl Torrent {
     pub fn from_value(value: &Value) -> anyhow::Result<Self> {
         if let Value::Dict(meta_info) = value {
